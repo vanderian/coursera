@@ -44,34 +44,54 @@ package object barneshut {
   }
 
   case class Empty(centerX: Float, centerY: Float, size: Float) extends Quad {
-    def massX: Float = ???
-    def massY: Float = ???
-    def mass: Float = ???
-    def total: Int = ???
-    def insert(b: Body): Quad = ???
+    def massX: Float = centerX
+    def massY: Float = centerY
+    def mass: Float = 0
+    def total: Int = 0
+    def insert(b: Body): Quad = Leaf(centerX, centerY, size, Seq(b))
   }
 
   case class Fork(
     nw: Quad, ne: Quad, sw: Quad, se: Quad
   ) extends Quad {
-    val centerX: Float = ???
-    val centerY: Float = ???
-    val size: Float = ???
-    val mass: Float = ???
-    val massX: Float = ???
-    val massY: Float = ???
-    val total: Int = ???
+    val quads = Seq(nw, ne, sw, se)
+    val centerX: Float = nw.centerX + nw.size / 2f
+    val centerY: Float = nw.centerY + nw.size / 2f
+    val size: Float = 2 * nw.size
+    val mass: Float = quads.foldLeft(0f)(_ + _.mass)
+    val massX: Float = if (mass == 0) centerX else quads.foldLeft(0f)((s, q) => s + q.massX * q.mass) / mass
+    val massY: Float = if (mass == 0) centerY else quads.foldLeft(0f)((s, q) => s + q.massY * q.mass) / mass
+    val total: Int = quads.foldLeft(0)(_ + _.total)
 
     def insert(b: Body): Fork = {
-      ???
+      if (b.x < centerX) {
+        if (b.y < centerY) Fork(nw.insert(b), ne, sw, se) else Fork(nw, ne, sw.insert(b), se)
+      } else {
+        if (b.y < centerY) Fork(nw, ne.insert(b), sw, se) else Fork(nw, ne, sw, se.insert(b))
+      }
     }
   }
 
   case class Leaf(centerX: Float, centerY: Float, size: Float, bodies: Seq[Body])
   extends Quad {
-    val (mass, massX, massY) = (??? : Float, ??? : Float, ??? : Float)
-    val total: Int = ???
-    def insert(b: Body): Quad = ???
+    val mass = bodies.foldLeft(0f)(_ + _.mass)
+    val massX = bodies.foldLeft(0f)((s, b) => s + b.x * b.mass) / mass
+    val massY = bodies.foldLeft(0f)((s, b) => s + b.y * b.mass) / mass
+    val total: Int = bodies.length
+    def insert(b: Body): Quad = {
+      if (size <= minimumSize) Leaf(centerX, centerY, size, b +: bodies)
+      else {
+        val s = size / 2f
+        val q = size / 4f
+        val f = Fork(
+          Empty(centerX - q, centerY - q, s),
+          Empty(centerX + q, centerY - q, s),
+          Empty(centerX - q, centerY + q, s),
+          Empty(centerY + q, centerY + q, s)
+        )
+        (b +: bodies).foldLeft(f)(_.insert(_))
+      }
+    }
   }
 
   def minimumSize = 0.00001f
@@ -120,12 +140,15 @@ package object barneshut {
 
       def traverse(quad: Quad): Unit = (quad: Quad) match {
         case Empty(_, _, _) =>
-          // no force
+        // no force
         case Leaf(_, _, _, bodies) =>
           // add force contribution of each body by calling addForce
-        case Fork(nw, ne, sw, se) =>
+          bodies foreach(b => addForce(b.mass, b.x, b.y))
+        case f : Fork =>
           // see if node is far enough from the body,
           // or recursion is needed
+          if (f.size / distance(f.centerX, f.centerY, x, y) < theta) addForce(f.mass, f.massX, f.massY)
+          else f.quads foreach traverse
       }
 
       traverse(quad)
@@ -145,17 +168,21 @@ package object barneshut {
   class SectorMatrix(val boundaries: Boundaries, val sectorPrecision: Int) {
     val sectorSize = boundaries.size / sectorPrecision
     val matrix = new Array[ConcBuffer[Body]](sectorPrecision * sectorPrecision)
-    for (i <- 0 until matrix.length) matrix(i) = new ConcBuffer
+    for (i <- matrix.indices) matrix(i) = new ConcBuffer
 
     def +=(b: Body): SectorMatrix = {
-      ???
+      def getPos(p1: Float, p2: Float):Int = {
+        ((p1 - p2) / sectorSize).toInt max 0 min sectorPrecision - 1
+      }
+      this(getPos(b.x,boundaries.minX),  getPos(b.y,boundaries.minY)) += b
       this
     }
 
     def apply(x: Int, y: Int) = matrix(y * sectorPrecision + x)
 
     def combine(that: SectorMatrix): SectorMatrix = {
-      ???
+      for (i <- matrix.indices) matrix(i) = matrix(i).combine(that.matrix(i))
+      this
     }
 
     def toQuad(parallelism: Int): Quad = {
@@ -165,7 +192,7 @@ package object barneshut {
           val sectorSize = boundaries.size / sectorPrecision
           val centerX = boundaries.minX + x * sectorSize + sectorSize / 2
           val centerY = boundaries.minY + y * sectorSize + sectorSize / 2
-          var emptyQuad: Quad = Empty(centerX, centerY, sectorSize)
+          val emptyQuad: Quad = Empty(centerX, centerY, sectorSize)
           val sectorBodies = this(x, y)
           sectorBodies.foldLeft(emptyQuad)(_ insert _)
         } else {
